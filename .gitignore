@@ -1,0 +1,14 @@
+# .env 파일 무시
+.env
+
+#  .env.local 파일 무시
+.env.local
+
+# .DS_Store 파일 무시
+.DS_Store
+
+# __pycache__ 폴더 무시
+__pycache__/
+
+# old 폴더 무시
+old/
