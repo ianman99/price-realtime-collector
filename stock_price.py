@@ -4,19 +4,24 @@ import json
 import pandas as pd
 import time
 from urllib.parse import quote
-import requests
 import socketio
 from dotenv import load_dotenv
 import os
 import threading
 from datetime import datetime, time as dt_time
-from login_krx import get_krx_session
+from sqlalchemy import create_engine
 
 # .env 파일 로드
 load_dotenv()
 
 # 환경 변수에서 로컬 서버 URL 가져오기
 LOCAL_SERVER_URL = os.getenv('SERVER_URL')
+
+# MySQL 데이터베이스 연결 정보
+DB_USER = os.getenv('DB_USER')
+DB_PASSWORD = os.getenv('DB_PASSWORD')
+DB_HOST = os.getenv('DB_HOST')
+DB_NAME_FIN = os.getenv('DB_NAME_FIN')
 
 # 웹소켓 클라이언트 생성
 server_sio = socketio.Client()
@@ -56,92 +61,46 @@ def handle_reconnect():
                 pass
             connect_local_websocket()
 
-# KRX 세션 쿠키 저장용 전역 변수
-krx_jsessionid = None
+# SQLAlchemy 엔진 생성
+engine = create_engine(f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME_FIN}?charset=utf8mb4")
 
-def refresh_krx_session():
+# DB에서 종목 정보를 가져와 DataFrame으로 반환하는 함수
+def get_stock_info_from_db():
     """
-    KRX 세션 쿠키를 갱신하는 함수
-    20분마다 실행되도록 설계됨
+    MySQL DB에서 주식/ETF 종목 정보를 가져와 DataFrame으로 반환하는 함수
+    - corp_info_kor: 일반 주식 종목
+    - etf_info_kor: ETF 종목
     """
-    global krx_jsessionid
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] KRX 세션 쿠키 갱신 시작...")
+    print("DB에서 종목 정보를 가져오는 중...")
     try:
-        krx_jsessionid = get_krx_session()
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] KRX 세션 쿠키 갱신 완료")
-    except Exception as e:
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] KRX 세션 쿠키 갱신 실패: {e}")
+        with engine.connect() as conn:
+            # 주식 종목 조회
+            corp_df = pd.read_sql(
+                "SELECT code, name, market AS mkt, list_dt AS listd FROM corp_info_kor",
+                conn
+            )
+            corp_df['etf'] = 0
 
-def session_refresh_loop():
-    """
-    20분마다 세션을 갱신하는 루프 함수 (별도 스레드에서 실행)
-    """
-    while True:
-        # 최초 실행 시 update_stock_list에서 이미 호출되었을 수 있지만,
-        # 20분 주기를 유지하기 위해 여기서도 계속 호출합니다.
-        time.sleep(20 * 60)  # 20분 대기
-        refresh_krx_session()
+            # ETF 종목 조회
+            etf_df = pd.read_sql(
+                "SELECT code, name, list_dt AS listd FROM etf_info_kor",
+                conn
+            )
+            etf_df['mkt'] = 'ETF'
+            etf_df['etf'] = 1
 
-# KRX에서 상세 종목 정보를 가져와 DataFrame으로 반환하는 함수
-def get_krx_stock_info_df():
-    """
-    KRX에서 전종목 정보를 가져와 DataFrame으로 반환하는 함수 (KONEX 제외)
-    - 종목코드, 종목명, 시장구분, 상장일을 포함한다.
-    """
-    global krx_jsessionid
-    
-    # 세션 쿠키가 없으면 먼저 가져옴
-    if krx_jsessionid is None:
-        refresh_krx_session()
-
-    print("KRX에서 상세 종목 정보를 가져오는 중...")
-    url = 'http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd'
-    headers = {
-        'Accept': 'application/json, text/javascript, */*; q=0.01',
-        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Connection': 'keep-alive',
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-        'Origin': 'http://data.krx.co.kr',
-        'Referer': 'http://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd?menuId=MDC0201050103',
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-        'X-Requested-With': 'XMLHttpRequest',
-        'Cookie': f'JSESSIONID={krx_jsessionid}' if krx_jsessionid else ''
-    }
-    data_payload = {
-        'bld': 'dbms/MDC/STAT/standard/MDCSTAT01901',
-        'locale': 'ko_KR',
-        'mktId': 'ALL',
-        'share': '1',
-        'csvxls_isNo': 'false',
-    }
-    try:
-        response = requests.post(url, headers=headers, data=data_payload, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        
-        if 'OutBlock_1' not in data:
-            print("오류: KRX 응답에서 'OutBlock_1'을 찾을 수 없습니다.")
-            return pd.DataFrame()
-
-        # 필요한 데이터만 추출하고 컬럼 이름 변경
-        stock_info = [
-            {
-                'code': item['ISU_SRT_CD'],  # 종목코드
-                'name': item['ISU_ABBRV'],  # 종목명
-                'mkt': item['MKT_TP_NM'],   # 시장구분
-                'listd': item['LIST_DD']    # 상장일
-            }
-            for item in data['OutBlock_1'] if item['MKT_TP_NM'] != 'KONEX'
-        ]
-        
-        df = pd.DataFrame(stock_info)
-        print(f"총 {len(df)}개의 종목 정보를 가져왔습니다. (KONEX 제외)")
+        # 두 DataFrame 합치기
+        df = pd.concat([corp_df, etf_df], ignore_index=True)
+        # code 컬럼에서 "A" 접두어 제거 (네이버 API 코드와 매칭 위해)
+        df['code'] = df['code'].str.lstrip('A')
+        # date 타입을 문자열로 변환 (JSON 직렬화 위해)
+        if 'listd' in df.columns:
+            df['listd'] = df['listd'].astype(str)
+        print(f"총 {len(df)}개의 종목 정보를 가져왔습니다. (주식: {len(corp_df)}, ETF: {len(etf_df)})")
         return df
-    except requests.exceptions.RequestException as e:
-        print(f"KRX에서 종목 코드를 가져오는 중 오류 발생: {e}")
-        return pd.DataFrame()
-    except json.JSONDecodeError:
-        print("오류: KRX 응답이 올바른 JSON 형식이 아닙니다.")
+
+    except Exception as e:
+        print(f"DB에서 종목 정보를 가져오는 중 오류 발생: {e}")
         return pd.DataFrame()
 
 # 전역 변수로 종목 정보 관리
@@ -152,13 +111,13 @@ last_update_date = None
 # 종목 리스트를 갱신하는 함수
 def update_stock_list():
     """
-    KRX에서 종목 리스트를 갱신하는 함수
-    매일 오전 9시 21분에 실행되도록 설계됨
+    DB에서 종목 리스트를 갱신하는 함수
+    매일 오전 9시 22분에 실행되도록 설계됨
     """
     global krx_info_df, stock_code, last_update_date
-    
+
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 종목 리스트 갱신 시작")
-    krx_info_df = get_krx_stock_info_df()
+    krx_info_df = get_stock_info_from_db()
     stock_code = krx_info_df['code'].tolist() if not krx_info_df.empty else []
     last_update_date = datetime.now().date()
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] 종목 리스트 갱신 완료: 총 {len(stock_code)}개")
@@ -279,14 +238,11 @@ async def process_all_stocks():
         # (price_df의 'cd'와 krx_info_df의 'code'를 기준으로 merge)
         final_df = pd.merge(price_df, krx_info_df, left_on='cd', right_on='code', how='left')
         
-        # 중복되는 'code' 컬럼은 제거
-        if 'code' in final_df.columns:
-            final_df = final_df.drop('code', axis=1)
-            
         final_df["cd"] = "A" + final_df["cd"]
 
-        # 3. 최종 DataFrame을 딕셔너리 리스트로 변환
-        stock_data_list = final_df.to_dict('records')
+        # 3. 전송할 컬럼만 선택하여 딕셔너리 리스트로 변환
+        send_columns = ["cd", "nv", "ov", "hv", "lv", "aq", "aa", "sv", "tyn", "name", "mkt", "listd", "etf"]
+        stock_data_list = final_df[send_columns].to_dict('records')
 
         # 전체 종목 데이터를 리스트에 담아 한 번에 전송
         try:
@@ -313,10 +269,6 @@ if __name__ == "__main__":
     # 로컬 웹소켓 서버에 먼저 연결
     connect_local_websocket()
 
-    # KRX 세션 갱신을 위한 별도 스레드 시작
-    session_thread = threading.Thread(target=session_refresh_loop, daemon=True)
-    session_thread.start()
-
     # 무한 루프 실행
     while True:
         # 현재 시간 확인
@@ -325,7 +277,7 @@ if __name__ == "__main__":
         current_time = now.time()
         
         # 오전 9시 21분에 종목 리스트 갱신 (오늘 아직 갱신하지 않은 경우)
-        if current_time.hour == 9 and current_time.minute == 21:
+        if current_time.hour == 9 and current_time.minute == 22:
             if last_update_date != current_date:
                 update_stock_list()
         
