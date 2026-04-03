@@ -62,7 +62,7 @@ def handle_reconnect():
             connect_local_websocket()
 
 # SQLAlchemy 엔진 생성
-engine = create_engine(f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME_FIN}?charset=utf8mb4")
+engine = create_engine(f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}/{DB_NAME_FIN}?charset=utf8mb4", pool_pre_ping=True)
 
 # DB에서 종목 정보를 가져와 DataFrame으로 반환하는 함수
 def get_stock_info_from_db():
