@@ -17,7 +17,7 @@ load_dotenv()
 print(os.getenv('SERVER_URL'))
 
 # 지수 리스트
-index_list = ["KRX:KOSPI", "KRX:KOSDAQ", "KRX:KOSPI200", "KRX:KOSDAQ150", "SP:SPX", "TVC:IXIC", "DJ:DJI", "TVC:NI225", "HSI:HSI"]
+index_list = ["KRX:KOSPI", "KRX:KOSDAQ", "KRX:KOSPI200", "KRX:KOSDAQ150", "SPCFD:SPX", "TVC:IXIC", "DJCFD:DJI", "TVC:NI225", "HSI:HSI"]
 # 채권 리스트
 bond_list = ["TVC:KR03Y" ,"TVC:KR10Y", "TVC:KR30Y","TVC:US02Y" ,"TVC:US10Y", "TVC:US30Y","TVC:JP02Y" ,"TVC:JP10Y", "TVC:JP30Y"]
 # 통화 리스트
